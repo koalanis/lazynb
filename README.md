@@ -4,34 +4,34 @@ A [lazygit](https://github.com/jesseduffield/lazygit)-style terminal UI for
 [`nb`](https://github.com/xwmx/nb), the plain-text notebook CLI. Built with
 [ratatui](https://ratatui.rs).
 
-`nb` does the heavy lifting (storage, search, git sync). `lazynb` is a fast,
-self-contained TUI front-end: browse notebooks and notes, preview them, and
-open them in your editor.
+`nb` handles storage, search and git sync. lazynb sits on top of it so you
+can browse notebooks and notes, preview them, and open them in your editor
+without typing `nb` commands.
 
 ## Status
 
-Early skeleton. Working today:
+Early days. So far it can:
 
-- Notebooks panel + notes panel + live preview pane
-- `j`/`k` navigation, `tab` to switch panels, `r` to reload
-- `enter` opens the selected note in your editor (or the parent Neovim
-  instance — see below)
+- Show notebooks, notes and a live preview side by side
+- Move around with `j`/`k`, switch panels with `tab`, reload with `r`
+- Open the selected note with `enter` (in your editor, or the Neovim session
+  it was launched from)
 
 ## Install
 
 ```sh
 cargo install --path .
-# or: cargo build --release  ->  target/release/lazynb
+# or: cargo build --release, then run target/release/lazynb
 ```
 
-Requires [`nb`](https://github.com/xwmx/nb) on your `PATH`.
+You need [`nb`](https://github.com/xwmx/nb) on your `PATH`.
 
 ## Keys
 
 | Key        | Action                              |
 | ---------- | ----------------------------------- |
 | `j` / `k`  | Move down / up in the focused panel |
-| `tab`      | Switch focus (notebooks ↔ notes)    |
+| `tab`      | Switch focus (notebooks / notes)    |
 | `1` / `2`  | Focus notebooks / notes directly    |
 | `enter`    | Open the selected note              |
 | `r`        | Reload the current notebook         |
@@ -39,12 +39,12 @@ Requires [`nb`](https://github.com/xwmx/nb) on your `PATH`.
 
 ## Neovim integration
 
-`lazynb` is a standalone binary, not a Neovim plugin. Like lazygit, you run
-it in a Neovim terminal buffer. When launched inside Neovim, opening a note
-hands the file to the *parent* Neovim via its `$NVIM` RPC socket instead of
-nesting a new editor.
+lazynb is a standalone binary, not a Neovim plugin. Like lazygit, you run it
+in a Neovim terminal buffer. When you open a note from inside Neovim, lazynb
+sends the file to that Neovim session over its `$NVIM` RPC socket rather than
+starting a second editor.
 
-Drop-in floating-terminal wrapper:
+Here's a command that opens it in a floating window:
 
 ```lua
 vim.api.nvim_create_user_command("LazyNb", function()
@@ -60,8 +60,8 @@ vim.api.nvim_create_user_command("LazyNb", function()
     style = "minimal",
     border = "rounded",
   })
-  -- $NVIM is set automatically in terminal buffers; lazynb reads it to open
-  -- notes back in this session.
+  -- Neovim sets $NVIM in terminal buffers; lazynb reads it to open notes
+  -- back in this session.
   vim.fn.termopen("lazynb", {
     on_exit = function()
       if vim.api.nvim_win_is_valid(win) then
@@ -73,4 +73,4 @@ vim.api.nvim_create_user_command("LazyNb", function()
 end, {})
 ```
 
-Then `:LazyNb`.
+Then run `:LazyNb`.
