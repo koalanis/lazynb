@@ -10,6 +10,34 @@ pub enum Panel {
     Notes,
 }
 
+/// State for the `nb` shell overlay: a small REPL that runs nb commands and
+/// shows their output, keeping a command history.
+pub struct ShellModal {
+    /// The line currently being typed.
+    pub input: String,
+    /// Scrollback: prompts entered and the output they produced.
+    pub output: Vec<String>,
+    /// Previously-entered commands, for up/down recall.
+    pub history: Vec<String>,
+    /// Cursor into `history` while recalling; `None` means "at the live input".
+    history_pos: Option<usize>,
+}
+
+impl ShellModal {
+    fn new() -> Self {
+        ShellModal {
+            input: String::new(),
+            output: vec![
+                "nb shell -- type a command (the leading `nb` is optional).".into(),
+                "Enter runs it, up/down recalls history, Esc closes.".into(),
+                String::new(),
+            ],
+            history: Vec::new(),
+            history_pos: None,
+        }
+    }
+}
+
 pub struct App {
     pub notebooks: Vec<String>,
     pub notes: Vec<Note>,
@@ -23,6 +51,8 @@ pub struct App {
     /// the TUI has torn down. Drives the `$NVIM`/`$EDITOR` handoff in `main`.
     pub open_request: Option<String>,
     pub status: String,
+    /// The nb shell overlay, when open.
+    pub shell: Option<ShellModal>,
 }
 
 impl App {
@@ -41,6 +71,7 @@ impl App {
             should_quit: false,
             open_request: None,
             status: String::new(),
+            shell: None,
         };
         app.reload_notes();
         Ok(app)
@@ -125,6 +156,105 @@ impl App {
         if let Some(note) = self.current_note() {
             self.open_request = Some(note.path.clone());
             self.should_quit = true;
+        }
+    }
+
+    /// Re-query notebooks and notes, preserving the selected notebook if it
+    /// still exists. Called after shell commands, which may have changed data.
+    pub fn refresh(&mut self) {
+        if let Ok(notebooks) = nb::notebooks() {
+            if !notebooks.is_empty() {
+                let selected = self.notebooks.get(self.notebook_idx).cloned();
+                self.notebooks = notebooks;
+                self.notebook_idx = selected
+                    .and_then(|name| self.notebooks.iter().position(|n| *n == name))
+                    .unwrap_or(0)
+                    .min(self.notebooks.len() - 1);
+            }
+        }
+        self.reload_notes();
+    }
+
+    pub fn open_shell(&mut self) {
+        self.shell = Some(ShellModal::new());
+    }
+
+    pub fn close_shell(&mut self) {
+        self.shell = None;
+        self.refresh();
+    }
+
+    pub fn shell_input(&mut self, c: char) {
+        if let Some(modal) = self.shell.as_mut() {
+            modal.input.push(c);
+            modal.history_pos = None;
+        }
+    }
+
+    pub fn shell_backspace(&mut self) {
+        if let Some(modal) = self.shell.as_mut() {
+            modal.input.pop();
+            modal.history_pos = None;
+        }
+    }
+
+    /// Run the typed command, append its output to the scrollback, and refresh
+    /// the panels behind the modal. `exit`/`quit` closes the shell.
+    pub fn shell_submit(&mut self) {
+        let line = match self.shell.as_ref() {
+            Some(modal) => modal.input.trim().to_string(),
+            None => return,
+        };
+        if line.is_empty() {
+            return;
+        }
+        if matches!(line.as_str(), "exit" | "quit") {
+            self.close_shell();
+            return;
+        }
+
+        let output = nb::run_command(&line);
+        if let Some(modal) = self.shell.as_mut() {
+            modal.output.push(format!("nb> {line}"));
+            if output.is_empty() {
+                modal.output.push("(no output)".into());
+            } else {
+                modal.output.extend(output);
+            }
+            modal.output.push(String::new());
+            modal.history.push(line);
+            modal.history_pos = None;
+            modal.input.clear();
+        }
+        self.refresh();
+    }
+
+    pub fn shell_history_prev(&mut self) {
+        if let Some(modal) = self.shell.as_mut() {
+            if modal.history.is_empty() {
+                return;
+            }
+            let pos = match modal.history_pos {
+                None => modal.history.len() - 1,
+                Some(p) => p.saturating_sub(1),
+            };
+            modal.history_pos = Some(pos);
+            modal.input = modal.history[pos].clone();
+        }
+    }
+
+    pub fn shell_history_next(&mut self) {
+        if let Some(modal) = self.shell.as_mut() {
+            match modal.history_pos {
+                Some(p) if p + 1 < modal.history.len() => {
+                    modal.history_pos = Some(p + 1);
+                    modal.input = modal.history[p + 1].clone();
+                }
+                _ => {
+                    modal.history_pos = None;
+                    modal.input.clear();
+                }
+            }
         }
     }
 }

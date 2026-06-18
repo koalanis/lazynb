@@ -1,12 +1,12 @@
 //! Rendering. A lazygit-style layout: a left sidebar with the notebooks and
 //! notes panels stacked, a preview pane on the right, and a help line below.
 
-use crate::app::{App, Panel};
+use crate::app::{App, Panel, ShellModal};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -34,6 +34,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_notes(f, app, sidebar[1]);
     draw_preview(f, app, cols[1]);
     draw_help(f, app, root[1]);
+
+    if let Some(shell) = &app.shell {
+        draw_shell(f, shell, f.area());
+    }
 }
 
 fn border_style(focused: bool) -> Style {
@@ -111,6 +115,8 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" open  "),
         key("r"),
         Span::raw(" reload  "),
+        key(":"),
+        Span::raw(" shell  "),
         key("q"),
         Span::raw(" quit"),
         sep,
@@ -120,4 +126,61 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// A rectangle centered in `area`, sized as a percentage of it.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(rows[1])[1]
+}
+
+fn draw_shell(f: &mut Frame, shell: &ShellModal, area: Rect) {
+    let popup = centered_rect(70, 60, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" nb shell ")
+        .title_bottom(" Esc close · ↑↓ history ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    // Show the tail of the scrollback that fits the output area.
+    let height = parts[0].height as usize;
+    let start = shell.output.len().saturating_sub(height);
+    let body: Vec<Line> = shell.output[start..]
+        .iter()
+        .map(|l| Line::raw(l.as_str()))
+        .collect();
+    f.render_widget(Paragraph::new(body), parts[0]);
+
+    let prompt = Line::from(vec![
+        Span::styled(
+            "nb> ",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(shell.input.as_str()),
+        Span::styled("█", Style::default().fg(Color::Magenta)),
+    ]);
+    f.render_widget(Paragraph::new(prompt), parts[1]);
 }
