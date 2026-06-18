@@ -44,6 +44,9 @@ jobs:
 
       - name: Seed a throwaway notebook
         run: |
+          # The first nb invocation runs one-time setup (the "Welcome" banner)
+          # and swallows its subcommand, so initialize explicitly first.
+          nb init < /dev/null
           # `nb add` reads stdin for piped content even with -c, so feed it
           # /dev/null or it blocks waiting for EOF.
           nb notebooks add ci-demo < /dev/null
