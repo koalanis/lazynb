@@ -39,10 +39,10 @@ Requires [`nb`](https://github.com/xwmx/nb) on your `PATH`.
 
 ## Neovim integration
 
-`lazynb` is a standalone binary, not a Neovim plugin. Like lazygit, it runs
-**hosted in a terminal buffer** (not piped — a TUI needs a real TTY). When
-launched inside Neovim, opening a note hands the file to the *parent* Neovim
-via its `$NVIM` RPC socket instead of nesting a new editor.
+`lazynb` is a standalone binary, not a Neovim plugin. Like lazygit, you run
+it in a Neovim terminal buffer. When launched inside Neovim, opening a note
+hands the file to the *parent* Neovim via its `$NVIM` RPC socket instead of
+nesting a new editor.
 
 Drop-in floating-terminal wrapper:
 
