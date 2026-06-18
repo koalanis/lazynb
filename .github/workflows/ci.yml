@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: build + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --verbose
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo test --release --verbose
+
+  render-preview:
+    name: render preview
+    needs: build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      # Keep nb fully local: no git remotes, no sync prompts.
+      NB_AUTO_SYNC: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install nb
+        run: |
+          sudo curl -fsSL https://raw.githubusercontent.com/xwmx/nb/master/nb \
+            -o /usr/local/bin/nb
+          sudo chmod +x /usr/local/bin/nb
+          git config --global user.name  "lazynb CI"
+          git config --global user.email "ci@example.com"
+
+      - name: Seed a throwaway notebook
+        run: |
+          # `nb add` reads stdin for piped content even with -c, so feed it
+          # /dev/null or it blocks waiting for EOF.
+          nb notebooks add ci-demo < /dev/null
+          nb use ci-demo < /dev/null
+          nb ci-demo:add -t "Welcome to lazynb" \
+            -c "This frame was rendered headless in CI." --tags demo < /dev/null
+          nb ci-demo:add -t "Browsing notes" \
+            -c "Notebooks on the left, notes below, preview on the right." < /dev/null
+          nb ci-demo:add -t "All from a throwaway notebook" \
+            -c "Seeded fresh for this run." < /dev/null
+
+      - name: Render a frame
+        run: |
+          cargo build --release
+          {
+            echo '### lazynb render preview'
+            echo
+            echo 'Rendered headless against an ad-hoc `nb` notebook seeded in CI.'
+            echo
+            echo '```'
+            ./target/release/lazynb snapshot 100x26
+            echo '```'
+          } > render.md
+
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file render.md

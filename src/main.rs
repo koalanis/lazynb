@@ -11,7 +11,7 @@ mod ui;
 
 use anyhow::Result;
 use app::App;
-use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::backend::{Backend, CrosstermBackend, TestBackend};
 use ratatui::crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -23,6 +23,13 @@ use std::process::Command;
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    // `lazynb snapshot [WxH]` renders one frame to text and exits, for CI and
+    // scripting where there's no TTY to host the interactive UI.
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("snapshot") {
+        return snapshot(args.next().as_deref());
+    }
+
     let mut app = App::new()?;
 
     enable_raw_mode()?;
@@ -72,6 +79,35 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Render a single frame to stdout as plain text and exit. Uses ratatui's
+/// in-memory `TestBackend`, so it needs no terminal -- handy for CI and for
+/// eyeballing the layout. `size` is an optional `WIDTHxHEIGHT` (default 110x30).
+fn snapshot(size: Option<&str>) -> Result<()> {
+    let (width, height) = size.and_then(parse_size).unwrap_or((110, 30));
+    let app = App::new()?;
+
+    let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+    terminal.draw(|f| ui::draw(f, &app))?;
+
+    let buf = terminal.backend().buffer();
+    let area = buf.area;
+    let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+    for y in 0..area.height {
+        for x in 0..area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.push('\n');
+    }
+    print!("{out}");
+    Ok(())
+}
+
+/// Parse a `WIDTHxHEIGHT` string like `100x28`.
+fn parse_size(s: &str) -> Option<(u16, u16)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Open `path` in the user's editor. Prefers the parent Neovim instance when
