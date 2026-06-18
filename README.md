@@ -35,7 +35,17 @@ You need [`nb`](https://github.com/xwmx/nb) on your `PATH`.
 | `1` / `2`  | Focus notebooks / notes directly    |
 | `enter`    | Open the selected note              |
 | `r`        | Reload the current notebook         |
+| `:`        | Open the nb shell (run nb commands) |
 | `q` / `esc`| Quit                                |
+
+## nb shell
+
+Press `:` to open a small command modal. Type any nb command (the leading
+`nb` is optional, like nb's own shell), press enter, and the output shows
+inline. Up and down recall history, `exit` or `esc` closes it, and the
+panels reload afterward so new or deleted notes show up. `EDITOR` is set to
+a no-op while a command runs, so `add` and friends can't hang waiting for an
+editor that has nowhere to draw.
 
 ## Neovim integration
 

@@ -66,6 +66,21 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
         if key.kind != KeyEventKind::Press {
             continue;
         }
+
+        // While the nb shell overlay is open it owns all keys.
+        if app.shell.is_some() {
+            match key.code {
+                KeyCode::Esc => app.close_shell(),
+                KeyCode::Enter => app.shell_submit(),
+                KeyCode::Backspace => app.shell_backspace(),
+                KeyCode::Up => app.shell_history_prev(),
+                KeyCode::Down => app.shell_history_next(),
+                KeyCode::Char(c) => app.shell_input(c),
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
             KeyCode::Char('j') | KeyCode::Down => app.next(),
@@ -74,6 +89,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
             KeyCode::Char('1') => app.focus = app::Panel::Notebooks,
             KeyCode::Char('2') => app.focus = app::Panel::Notes,
             KeyCode::Char('r') => app.reload_notes(),
+            KeyCode::Char(':') => app.open_shell(),
             KeyCode::Enter => app.open_selected(),
             _ => {}
         }
