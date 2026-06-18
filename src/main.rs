@@ -1,0 +1,89 @@
+//! lazynb -- a lazygit-style terminal UI for the `nb` notebook CLI.
+//!
+//! Runs as a self-contained ratatui app. When launched inside Neovim's
+//! built-in terminal (`:terminal lazynb`), opening a note hands the file off
+//! to the parent Neovim via its `$NVIM` RPC socket instead of nesting a new
+//! editor -- the same trick lazygit uses.
+
+mod app;
+mod nb;
+mod ui;
+
+use anyhow::Result;
+use app::App;
+use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::Terminal;
+use std::io::stdout;
+use std::process::Command;
+use std::time::Duration;
+
+fn main() -> Result<()> {
+    let mut app = App::new()?;
+
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+
+    let res = run(&mut terminal, &mut app);
+
+    // Always restore the terminal, even if the loop errored.
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    res?;
+
+    // The handoff happens after the alternate screen is torn down so the
+    // editor (or the parent nvim) draws on a clean terminal.
+    if let Some(path) = app.open_request {
+        open_note(&path)?;
+    }
+    Ok(())
+}
+
+fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+    while !app.should_quit {
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('j') | KeyCode::Down => app.next(),
+            KeyCode::Char('k') | KeyCode::Up => app.prev(),
+            KeyCode::Tab => app.toggle_focus(),
+            KeyCode::Char('1') => app.focus = app::Panel::Notebooks,
+            KeyCode::Char('2') => app.focus = app::Panel::Notes,
+            KeyCode::Char('r') => app.reload_notes(),
+            KeyCode::Enter => app.open_selected(),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Open `path` in the user's editor. Prefers the parent Neovim instance when
+/// running inside its terminal, so notes land in the existing session.
+fn open_note(path: &str) -> Result<()> {
+    if let Ok(socket) = std::env::var("NVIM") {
+        Command::new("nvim")
+            .args(["--server", &socket, "--remote", path])
+            .status()?;
+        return Ok(());
+    }
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    Command::new(editor).arg(path).status()?;
+    Ok(())
+}

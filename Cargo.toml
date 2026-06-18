@@ -1,0 +1,10 @@
+[package]
+name = "lazynb"
+version = "0.1.0"
+edition = "2021"
+description = "A lazygit-style terminal UI for the nb notebook CLI"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+anyhow = "1"
