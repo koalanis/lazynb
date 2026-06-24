@@ -6,7 +6,9 @@
 //! editor -- the same trick lazygit uses.
 
 mod app;
+mod config;
 mod nb;
+mod overlay;
 mod ui;
 
 use anyhow::Result;
@@ -67,17 +69,10 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
             continue;
         }
 
-        // While the nb shell overlay is open it owns all keys.
-        if app.shell.is_some() {
-            match key.code {
-                KeyCode::Esc => app.close_shell(),
-                KeyCode::Enter => app.shell_submit(),
-                KeyCode::Backspace => app.shell_backspace(),
-                KeyCode::Up => app.shell_history_prev(),
-                KeyCode::Down => app.shell_history_next(),
-                KeyCode::Char(c) => app.shell_input(c),
-                _ => {}
-            }
+        // While an overlay is open it owns all keys.
+        if app.overlay.is_some() {
+            let action = app.overlay.as_mut().unwrap().on_key(key);
+            app.apply(action);
             continue;
         }
 
@@ -89,6 +84,9 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
             KeyCode::Char('1') => app.focus = app::Panel::Notebooks,
             KeyCode::Char('2') => app.focus = app::Panel::Notes,
             KeyCode::Char('r') => app.reload_notes(),
+            KeyCode::Char('t') => app.open_tag_list(),
+            KeyCode::Char('b') => app.open_backlinks(),
+            KeyCode::Char('l') => app.open_links(),
             KeyCode::Char(':') => app.open_shell(),
             KeyCode::Enter => app.open_selected(),
             _ => {}

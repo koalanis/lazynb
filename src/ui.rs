@@ -1,7 +1,9 @@
 //! Rendering. A lazygit-style layout: a left sidebar with the notebooks and
 //! notes panels stacked, a preview pane on the right, and a help line below.
+//! Any open [`Overlay`] is drawn last, as a centered popup.
 
-use crate::app::{App, Panel, ShellModal};
+use crate::app::{App, Panel};
+use crate::config::Config;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -35,30 +37,31 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_preview(f, app, cols[1]);
     draw_help(f, app, root[1]);
 
-    if let Some(shell) = &app.shell {
-        draw_shell(f, shell, f.area());
+    if let Some(overlay) = &app.overlay {
+        let (pw, ph) = overlay.size();
+        let popup = centered_rect(pw, ph, f.area());
+        f.render_widget(Clear, popup);
+        overlay.render(f, popup, &app.config);
     }
 }
 
-fn border_style(focused: bool) -> Style {
+fn border_style(focused: bool, cfg: &Config) -> Style {
     if focused {
-        Style::default().fg(Color::Green)
+        Style::default().fg(cfg.focus)
     } else {
         Style::default().fg(Color::DarkGray)
     }
 }
 
-fn panel_block(title: &str, focused: bool) -> Block<'_> {
+fn panel_block<'a>(title: &str, focused: bool, cfg: &Config) -> Block<'a> {
     Block::default()
         .title(format!(" {title} "))
         .borders(Borders::ALL)
-        .border_style(border_style(focused))
+        .border_style(border_style(focused, cfg))
 }
 
-fn highlight() -> Style {
-    Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD)
+fn highlight(cfg: &Config) -> Style {
+    Style::default().fg(cfg.highlight).add_modifier(Modifier::BOLD)
 }
 
 fn draw_notebooks(f: &mut Frame, app: &App, area: Rect) {
@@ -68,8 +71,8 @@ fn draw_notebooks(f: &mut Frame, app: &App, area: Rect) {
         .map(|n| ListItem::new(n.as_str()))
         .collect();
     let list = List::new(items)
-        .block(panel_block("Notebooks", app.focus == Panel::Notebooks))
-        .highlight_style(highlight())
+        .block(panel_block("Notebooks", app.focus == Panel::Notebooks, &app.config))
+        .highlight_style(highlight(&app.config))
         .highlight_symbol("▌ ");
     let mut state = ListState::default();
     state.select(Some(app.notebook_idx));
@@ -77,14 +80,18 @@ fn draw_notebooks(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_notes(f: &mut Frame, app: &App, area: Rect) {
+    let title = match &app.tag_filter {
+        Some(tag) => format!("Notes  #{tag}"),
+        None => "Notes".to_string(),
+    };
     let items: Vec<ListItem> = app
         .notes
         .iter()
         .map(|note| ListItem::new(format!("[{}] {}", note.id, note.title)))
         .collect();
     let list = List::new(items)
-        .block(panel_block("Notes", app.focus == Panel::Notes))
-        .highlight_style(highlight())
+        .block(panel_block(&title, app.focus == Panel::Notes, &app.config))
+        .highlight_style(highlight(&app.config))
         .highlight_symbol("▌ ");
     let mut state = ListState::default();
     if !app.notes.is_empty() {
@@ -99,31 +106,30 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         .map(|n| n.title.clone())
         .unwrap_or_else(|| "Preview".to_string());
     let text: Vec<Line> = app.preview.iter().map(|l| Line::raw(l.as_str())).collect();
-    let para = Paragraph::new(text).block(panel_block(&title, false));
+    let para = Paragraph::new(text).block(panel_block(&title, false, &app.config));
     f.render_widget(para, area);
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let key = |k: &'static str| Span::styled(k, Style::default().fg(Color::Cyan));
-    let sep = Span::raw("  ");
     let line = Line::from(vec![
         key("j/k"),
         Span::raw(" move  "),
         key("tab"),
         Span::raw(" switch  "),
+        key("t"),
+        Span::raw(" tags  "),
+        key("b"),
+        Span::raw(" backlinks  "),
+        key("l"),
+        Span::raw(" links  "),
         key("enter"),
         Span::raw(" open  "),
-        key("r"),
-        Span::raw(" reload  "),
         key(":"),
         Span::raw(" shell  "),
         key("q"),
-        Span::raw(" quit"),
-        sep,
-        Span::styled(
-            app.status.clone(),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::raw(" quit  "),
+        Span::styled(app.status.clone(), Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -146,41 +152,4 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(rows[1])[1]
-}
-
-fn draw_shell(f: &mut Frame, shell: &ShellModal, area: Rect) {
-    let popup = centered_rect(70, 60, area);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title(" nb shell ")
-        .title_bottom(" Esc close · ↑↓ history ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-
-    let parts = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
-
-    // Show the tail of the scrollback that fits the output area.
-    let height = parts[0].height as usize;
-    let start = shell.output.len().saturating_sub(height);
-    let body: Vec<Line> = shell.output[start..]
-        .iter()
-        .map(|l| Line::raw(l.as_str()))
-        .collect();
-    f.render_widget(Paragraph::new(body), parts[0]);
-
-    let prompt = Line::from(vec![
-        Span::styled(
-            "nb> ",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(shell.input.as_str()),
-        Span::styled("█", Style::default().fg(Color::Magenta)),
-    ]);
-    f.render_widget(Paragraph::new(prompt), parts[1]);
 }

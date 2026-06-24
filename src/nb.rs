@@ -74,6 +74,50 @@ pub fn notes(notebook: &str) -> Result<Vec<Note>> {
     Ok(notes)
 }
 
+/// Absolute paths of notes in `notebook` carrying `tag`. Returns paths only
+/// (nb's `ls --tag` output), to be intersected with the full notes list.
+pub fn note_paths_with_tag(notebook: &str, tag: &str) -> Vec<String> {
+    let scope = format!("{notebook}:");
+    let out = run(&[
+        "ls", "-a", "--no-header", "--no-footer", "--paths", "--tag", tag, &scope,
+    ]);
+    paths_from(out)
+}
+
+/// Every tag in `notebook`, without the leading `#`.
+pub fn tags(notebook: &str) -> Vec<String> {
+    let scoped = format!("{notebook}:search");
+    match run(&[&scoped, "--tags"]) {
+        Ok(out) => out
+            .lines()
+            .map(|l| l.trim().trim_start_matches('#').to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Absolute paths of notes in `notebook` matching a full-text `query` (used for
+/// `[[wiki link]]` backlink lookups). Empty when nothing matches.
+pub fn search_paths(notebook: &str, query: &str) -> Vec<String> {
+    let scoped = format!("{notebook}:search");
+    let out = run(&[&scoped, query, "--list", "--path"]);
+    paths_from(out)
+}
+
+/// Pull absolute paths out of a command result, ignoring decoration lines.
+fn paths_from(out: Result<String>) -> Vec<String> {
+    match out {
+        Ok(text) => text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with('/'))
+            .map(String::from)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Derive a display title from a note's first line (markdown heading), or
 /// fall back to the filename stem if the file is empty/unreadable.
 fn title_for(path: &str) -> String {
