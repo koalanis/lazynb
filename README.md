@@ -38,6 +38,8 @@ You need [`nb`](https://github.com/xwmx/nb) on your `PATH`.
 | `t`        | Tag list / filter the notes panel   |
 | `b`        | Backlinks to the selected note      |
 | `l`        | Jump to a `[[link]]` in the note    |
+| `/`        | Live grep the notebook (ripgrep)    |
+| `g`        | Relationship graph of the notebook  |
 | `:`        | Open the nb shell (run nb commands) |
 | `q` / `esc`| Quit                                |
 
@@ -55,6 +57,27 @@ All of these are thin wrappers over nb primitives (`nb ls --tag`,
 `nb <nb>:search`), and they're built on a small reusable overlay system —
 see [Extending](#extending).
 
+## Search
+
+`/` opens a Telescope-style live grep over the selected notebook, powered by
+ripgrep. Each keystroke re-runs `rg` across the notebook's note files; results
+show `[id] Title :line matched-text`. Enter jumps to the match. Needs `rg` on
+your `PATH`.
+
+## Graph
+
+`g` opens a relationship graph of the current notebook, like Obsidian or
+Quartz: each note is a node, `[[links]]` are solid edges and shared `#tags`
+are dim edges. The layout is a Fruchterman-Reingold force simulation that
+visibly settles over a few seconds, drawn on a braille canvas so edges read as
+smooth lines rather than blocky ASCII.
+
+- `↑`/`↓` (or `j`/`k`, `tab`) move the selection; the selected node and its
+  edges highlight.
+- `enter` jumps to the selected note.
+- `t` toggles the shared-tag edges; `r` re-runs the layout.
+- `esc` closes.
+
 ## Extending
 
 Modal widgets live in `src/overlay.rs` and implement the `Overlay` trait
@@ -67,6 +90,12 @@ are each a few lines that assemble a `Picker`. To add a new overlay: add an
 `Action` variant if you need a new effect, handle it in `App::apply`, then
 build a `Picker` (or implement `Overlay`) and open it from an `App::open_*`
 method bound to a key in `main.rs`. Colors live in `src/config.rs`.
+
+The overlays span the range the trait is meant to cover: `Picker` (tags,
+backlinks, links) is pure data; `Shell` and `Search` are input + output;
+`Graph` (`src/graph.rs`) is a fully custom widget that animates via the
+trait's `tick`/`animating` hooks (the event loop ticks the overlay and polls
+faster while it reports `animating`).
 
 ## nb shell
 

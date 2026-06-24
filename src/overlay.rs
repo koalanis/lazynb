@@ -16,7 +16,9 @@
 //! `Overlay` for your own type and open it from an `App::open_*` method.
 
 use crate::config::Config;
-use crate::nb;
+use crate::nb::{self, Note};
+use std::collections::HashMap;
+use std::process::Command;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -49,6 +51,12 @@ pub trait Overlay {
     /// Preferred popup size as (width%, height%) of the screen.
     fn size(&self) -> (u16, u16) {
         (70, 60)
+    }
+    /// Advance any animation by one frame; called once per UI tick.
+    fn tick(&mut self) {}
+    /// Whether the overlay wants frequent redraws (drives the poll interval).
+    fn animating(&self) -> bool {
+        false
     }
 }
 
@@ -325,5 +333,180 @@ impl Overlay for Shell {
             Span::styled("█", Style::default().fg(cfg.accent)),
         ]);
         f.render_widget(Paragraph::new(prompt), parts[1]);
+    }
+}
+
+/// One ripgrep match: a note path, the line number, and the matched text.
+struct Hit {
+    path: String,
+    line: u32,
+    text: String,
+}
+
+/// Telescope-style live grep over a notebook's notes, powered by ripgrep.
+/// Each keystroke re-runs `rg` over the note files; Enter jumps to the match.
+pub struct Search {
+    notebook: String,
+    files: Vec<String>,
+    /// path -> display label (`[id] Title`) for results.
+    labels: HashMap<String, String>,
+    query: String,
+    results: Vec<Hit>,
+    selected: usize,
+    note: String,
+}
+
+impl Search {
+    pub fn new(notebook: impl Into<String>, notes: &[Note]) -> Self {
+        let files = notes.iter().map(|n| n.path.clone()).collect();
+        let labels = notes
+            .iter()
+            .map(|n| (n.path.clone(), format!("[{}] {}", n.id, n.title)))
+            .collect();
+        Search {
+            notebook: notebook.into(),
+            files,
+            labels,
+            query: String::new(),
+            results: Vec::new(),
+            selected: 0,
+            note: "type to grep this notebook (ripgrep)".into(),
+        }
+    }
+
+    fn run(&mut self) {
+        self.results.clear();
+        self.selected = 0;
+        let query = self.query.trim();
+        if query.is_empty() || self.files.is_empty() {
+            self.note = "type to grep this notebook (ripgrep)".into();
+            return;
+        }
+
+        let mut cmd = Command::new("rg");
+        cmd.args([
+            "--line-number",
+            "--no-heading",
+            "--color",
+            "never",
+            "--smart-case",
+            "--max-count",
+            "20",
+            "-e",
+            query,
+            "--",
+        ]);
+        cmd.args(&self.files);
+
+        match cmd.output() {
+            Ok(out) => {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    if let Some(hit) = parse_rg(line) {
+                        self.results.push(hit);
+                    }
+                    if self.results.len() >= 200 {
+                        break;
+                    }
+                }
+                self.note = match self.results.len() {
+                    0 => "no matches".into(),
+                    n => format!("{n} matches"),
+                };
+            }
+            Err(_) => self.note = "ripgrep (rg) not found on PATH".into(),
+        }
+    }
+}
+
+/// Parse a `path:line:text` ripgrep line.
+fn parse_rg(line: &str) -> Option<Hit> {
+    let mut parts = line.splitn(3, ':');
+    let path = parts.next()?.to_string();
+    let line = parts.next()?.parse().ok()?;
+    let text = parts.next()?.trim().to_string();
+    Some(Hit { path, line, text })
+}
+
+impl Overlay for Search {
+    fn size(&self) -> (u16, u16) {
+        (80, 70)
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => Action::Close,
+            KeyCode::Enter => self
+                .results
+                .get(self.selected)
+                .map(|h| Action::SelectNote(h.path.clone()))
+                .unwrap_or(Action::None),
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                if self.selected + 1 < self.results.len() {
+                    self.selected += 1;
+                }
+                Action::None
+            }
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.run();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                self.query.push(c);
+                self.run();
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn render(&self, f: &mut Frame, area: Rect, cfg: &Config) {
+        let block = Block::default()
+            .title(format!(" Search · {} ", self.notebook))
+            .title_bottom(" type to filter · ↑↓ select · Enter open · Esc close ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(cfg.accent));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+
+        let prompt = Line::from(vec![
+            Span::styled(
+                "rg> ",
+                Style::default().fg(cfg.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(self.query.as_str()),
+            Span::styled("█", Style::default().fg(cfg.accent)),
+        ]);
+        f.render_widget(Paragraph::new(prompt), parts[0]);
+
+        if self.results.is_empty() {
+            let msg = Paragraph::new(self.note.as_str()).style(Style::default().fg(Color::DarkGray));
+            f.render_widget(msg, parts[1]);
+            return;
+        }
+
+        let rows: Vec<ListItem> = self
+            .results
+            .iter()
+            .map(|h| {
+                let label = self.labels.get(&h.path).map(String::as_str).unwrap_or("?");
+                ListItem::new(format!("{label}  :{}  {}", h.line, h.text))
+            })
+            .collect();
+        let list = List::new(rows)
+            .highlight_style(Style::default().fg(cfg.highlight).add_modifier(Modifier::BOLD))
+            .highlight_symbol("▌ ");
+        let mut state = ListState::default();
+        state.select(Some(self.selected));
+        f.render_stateful_widget(list, parts[1], &mut state);
     }
 }

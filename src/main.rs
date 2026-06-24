@@ -7,6 +7,7 @@
 
 mod app;
 mod config;
+mod graph;
 mod nb;
 mod overlay;
 mod ui;
@@ -57,9 +58,15 @@ fn main() -> Result<()> {
 
 fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     while !app.should_quit {
+        if let Some(overlay) = app.overlay.as_mut() {
+            overlay.tick();
+        }
         terminal.draw(|f| ui::draw(f, app))?;
 
-        if !event::poll(Duration::from_millis(200))? {
+        // Poll faster while an overlay is animating (e.g. the graph settling).
+        let animating = app.overlay.as_ref().is_some_and(|o| o.animating());
+        let timeout = Duration::from_millis(if animating { 40 } else { 200 });
+        if !event::poll(timeout)? {
             continue;
         }
         let Event::Key(key) = event::read()? else {
@@ -87,6 +94,8 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
             KeyCode::Char('t') => app.open_tag_list(),
             KeyCode::Char('b') => app.open_backlinks(),
             KeyCode::Char('l') => app.open_links(),
+            KeyCode::Char('/') => app.open_search(),
+            KeyCode::Char('g') => app.open_graph(),
             KeyCode::Char(':') => app.open_shell(),
             KeyCode::Enter => app.open_selected(),
             _ => {}
