@@ -1,8 +1,9 @@
 //! Application state and the actions the key handler drives.
 
 use crate::config::Config;
+use crate::graph::{EdgeKind, Graph};
 use crate::nb::{self, Note};
-use crate::overlay::{Action, Overlay, PickItem, Picker, Shell};
+use crate::overlay::{Action, Overlay, PickItem, Picker, Search, Shell};
 use anyhow::Result;
 use std::collections::HashSet;
 
@@ -282,6 +283,63 @@ impl App {
                 .sized(70, 70),
         ));
     }
+
+    /// Open a ripgrep live-search over the selected notebook.
+    pub fn open_search(&mut self) {
+        let Some(name) = self.current_notebook() else {
+            return;
+        };
+        let notes = nb::notes(&name).unwrap_or_default();
+        self.overlay = Some(Box::new(Search::new(name, &notes)));
+    }
+
+    /// Build the relationship graph for the selected notebook (nodes = notes,
+    /// edges = `[[links]]` and shared `#tags`) and open it.
+    pub fn open_graph(&mut self) {
+        let Some(name) = self.current_notebook() else {
+            return;
+        };
+        let notes = nb::notes(&name).unwrap_or_default();
+
+        let mut raw = Vec::with_capacity(notes.len());
+        let mut links_per: Vec<Vec<String>> = Vec::with_capacity(notes.len());
+        let mut tags_per: Vec<HashSet<String>> = Vec::with_capacity(notes.len());
+        for note in &notes {
+            let content = std::fs::read_to_string(&note.path).unwrap_or_default();
+            let lines: Vec<String> = content.lines().map(String::from).collect();
+            raw.push((note.id.clone(), note.title.clone(), note.path.clone()));
+            links_per.push(extract_wiki_links(&lines));
+            tags_per.push(extract_tags(&lines).into_iter().collect());
+        }
+
+        let resolve = |target: &str| {
+            notes
+                .iter()
+                .position(|n| n.title.eq_ignore_ascii_case(target) || n.id == target)
+        };
+
+        let mut linked: HashSet<(usize, usize)> = HashSet::new();
+        let mut edges = Vec::new();
+        for (i, links) in links_per.iter().enumerate() {
+            for target in links {
+                if let Some(j) = resolve(target) {
+                    if i != j && linked.insert((i.min(j), i.max(j))) {
+                        edges.push((i, j, EdgeKind::Link));
+                    }
+                }
+            }
+        }
+        // Tag edges between notes sharing a tag, skipping already-linked pairs.
+        for i in 0..notes.len() {
+            for j in (i + 1)..notes.len() {
+                if !tags_per[i].is_disjoint(&tags_per[j]) && !linked.contains(&(i, j)) {
+                    edges.push((i, j, EdgeKind::Tag));
+                }
+            }
+        }
+
+        self.overlay = Some(Box::new(Graph::new(raw, edges)));
+    }
 }
 
 /// The notebook a note path belongs to: the name of its parent directory.
@@ -290,6 +348,39 @@ fn notebook_of_path(path: &str) -> Option<String> {
         .parent()?
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
+}
+
+/// Extract `#tags` from note lines (lowercased, de-duplicated). A `#` only
+/// starts a tag at a word boundary and when followed by a tag character, so
+/// markdown headings (`# Title`) are not mistaken for tags.
+fn extract_tags(lines: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in lines {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] != '#' {
+                i += 1;
+                continue;
+            }
+            let boundary = i == 0
+                || chars[i - 1].is_whitespace()
+                || matches!(chars[i - 1], '(' | ',' | '[' | '\'' | '"');
+            let start = i + 1;
+            let mut j = start;
+            while j < chars.len() && (chars[j].is_alphanumeric() || matches!(chars[j], '-' | '_')) {
+                j += 1;
+            }
+            if boundary && j > start {
+                let tag: String = chars[start..j].iter().collect::<String>().to_lowercase();
+                if !out.contains(&tag) {
+                    out.push(tag);
+                }
+            }
+            i = j.max(i + 1);
+        }
+    }
+    out
 }
 
 /// Extract `[[wiki link]]` targets from note lines, in order, de-duplicated.
