@@ -1,41 +1,16 @@
 //! Application state and the actions the key handler drives.
 
+use crate::config::Config;
 use crate::nb::{self, Note};
+use crate::overlay::{Action, Overlay, PickItem, Picker, Shell};
 use anyhow::Result;
+use std::collections::HashSet;
 
 /// Which panel currently has keyboard focus.
 #[derive(PartialEq, Clone, Copy)]
 pub enum Panel {
     Notebooks,
     Notes,
-}
-
-/// State for the `nb` shell overlay: a small REPL that runs nb commands and
-/// shows their output, keeping a command history.
-pub struct ShellModal {
-    /// The line currently being typed.
-    pub input: String,
-    /// Scrollback: prompts entered and the output they produced.
-    pub output: Vec<String>,
-    /// Previously-entered commands, for up/down recall.
-    pub history: Vec<String>,
-    /// Cursor into `history` while recalling; `None` means "at the live input".
-    history_pos: Option<usize>,
-}
-
-impl ShellModal {
-    fn new() -> Self {
-        ShellModal {
-            input: String::new(),
-            output: vec![
-                "nb shell -- type a command (the leading `nb` is optional).".into(),
-                "Enter runs it, up/down recalls history, Esc closes.".into(),
-                String::new(),
-            ],
-            history: Vec::new(),
-            history_pos: None,
-        }
-    }
 }
 
 pub struct App {
@@ -51,8 +26,11 @@ pub struct App {
     /// the TUI has torn down. Drives the `$NVIM`/`$EDITOR` handoff in `main`.
     pub open_request: Option<String>,
     pub status: String,
-    /// The nb shell overlay, when open.
-    pub shell: Option<ShellModal>,
+    /// Active tag filter for the notes panel, if any.
+    pub tag_filter: Option<String>,
+    /// The floating overlay (shell, picker, ...), when one is open.
+    pub overlay: Option<Box<dyn Overlay>>,
+    pub config: Config,
 }
 
 impl App {
@@ -71,7 +49,9 @@ impl App {
             should_quit: false,
             open_request: None,
             status: String::new(),
-            shell: None,
+            tag_filter: None,
+            overlay: None,
+            config: Config::default(),
         };
         app.reload_notes();
         Ok(app)
@@ -81,20 +61,36 @@ impl App {
         self.notes.get(self.note_idx)
     }
 
-    /// Reload the notes list for the selected notebook and refresh the preview.
+    fn current_notebook(&self) -> Option<String> {
+        self.notebooks.get(self.notebook_idx).cloned()
+    }
+
+    /// Reload the notes list for the selected notebook, applying the tag filter,
+    /// and refresh the preview.
     pub fn reload_notes(&mut self) {
-        let Some(name) = self.notebooks.get(self.notebook_idx).cloned() else {
+        let Some(name) = self.current_notebook() else {
             return;
         };
-        match nb::notes(&name) {
-            Ok(notes) => {
-                self.notes = notes;
-                self.note_idx = 0;
-                self.status = format!("{} · {} notes", name, self.notes.len());
-                self.load_preview();
+        let mut notes = match nb::notes(&name) {
+            Ok(notes) => notes,
+            Err(e) => {
+                self.status = format!("error: {e}");
+                return;
             }
-            Err(e) => self.status = format!("error: {e}"),
+        };
+        if let Some(tag) = &self.tag_filter {
+            let allowed: HashSet<String> = nb::note_paths_with_tag(&name, tag).into_iter().collect();
+            notes.retain(|n| allowed.contains(&n.path));
         }
+        self.notes = notes;
+        self.note_idx = 0;
+        let filter = self
+            .tag_filter
+            .as_ref()
+            .map(|t| format!(" · #{t}"))
+            .unwrap_or_default();
+        self.status = format!("{} · {} notes{}", name, self.notes.len(), filter);
+        self.load_preview();
     }
 
     fn load_preview(&mut self) {
@@ -164,7 +160,7 @@ impl App {
     pub fn refresh(&mut self) {
         if let Ok(notebooks) = nb::notebooks() {
             if !notebooks.is_empty() {
-                let selected = self.notebooks.get(self.notebook_idx).cloned();
+                let selected = self.current_notebook();
                 self.notebooks = notebooks;
                 self.notebook_idx = selected
                     .and_then(|name| self.notebooks.iter().position(|n| *n == name))
@@ -175,86 +171,175 @@ impl App {
         self.reload_notes();
     }
 
+    // --- Overlays -----------------------------------------------------------
+
+    /// Apply an action emitted by the active overlay.
+    pub fn apply(&mut self, action: Action) {
+        match action {
+            Action::None => {}
+            Action::Close => self.overlay = None,
+            Action::Refresh => self.refresh(),
+            Action::SelectNote(path) => {
+                self.overlay = None;
+                self.select_note_by_path(&path);
+            }
+            Action::SetTagFilter(filter) => {
+                self.overlay = None;
+                self.tag_filter = filter;
+                self.reload_notes();
+            }
+        }
+    }
+
+    /// Move the panel selection to the note at `path`, switching notebook and
+    /// clearing the tag filter if needed so the target is reachable.
+    fn select_note_by_path(&mut self, path: &str) {
+        if let Some(name) = notebook_of_path(path) {
+            if self.current_notebook().as_deref() != Some(name.as_str()) {
+                if let Some(idx) = self.notebooks.iter().position(|n| *n == name) {
+                    self.notebook_idx = idx;
+                }
+            }
+        }
+        self.tag_filter = None;
+        self.reload_notes();
+        if let Some(idx) = self.notes.iter().position(|n| n.path == path) {
+            self.note_idx = idx;
+            self.load_preview();
+        }
+    }
+
     pub fn open_shell(&mut self) {
-        self.shell = Some(ShellModal::new());
+        self.overlay = Some(Box::new(Shell::new()));
     }
 
-    pub fn close_shell(&mut self) {
-        self.shell = None;
-        self.refresh();
-    }
-
-    pub fn shell_input(&mut self, c: char) {
-        if let Some(modal) = self.shell.as_mut() {
-            modal.input.push(c);
-            modal.history_pos = None;
-        }
-    }
-
-    pub fn shell_backspace(&mut self) {
-        if let Some(modal) = self.shell.as_mut() {
-            modal.input.pop();
-            modal.history_pos = None;
-        }
-    }
-
-    /// Run the typed command, append its output to the scrollback, and refresh
-    /// the panels behind the modal. `exit`/`quit` closes the shell.
-    pub fn shell_submit(&mut self) {
-        let line = match self.shell.as_ref() {
-            Some(modal) => modal.input.trim().to_string(),
-            None => return,
+    /// Picker of every tag in the current notebook; selecting one filters the
+    /// notes panel (and a sentinel row clears the filter).
+    pub fn open_tag_list(&mut self) {
+        let Some(name) = self.current_notebook() else {
+            return;
         };
-        if line.is_empty() {
-            return;
+        let mut items = vec![PickItem::new("[ all notes ]", Action::SetTagFilter(None))];
+        for tag in nb::tags(&name) {
+            items.push(PickItem::new(
+                format!("#{tag}"),
+                Action::SetTagFilter(Some(tag)),
+            ));
         }
-        if matches!(line.as_str(), "exit" | "quit") {
-            self.close_shell();
-            return;
-        }
-
-        let output = nb::run_command(&line);
-        if let Some(modal) = self.shell.as_mut() {
-            modal.output.push(format!("nb> {line}"));
-            if output.is_empty() {
-                modal.output.push("(no output)".into());
-            } else {
-                modal.output.extend(output);
-            }
-            modal.output.push(String::new());
-            modal.history.push(line);
-            modal.history_pos = None;
-            modal.input.clear();
-        }
-        self.refresh();
+        self.overlay = Some(Box::new(
+            Picker::new(format!("Tags in {name}"), items).empty_note("No tags in this notebook."),
+        ));
     }
 
-    pub fn shell_history_prev(&mut self) {
-        if let Some(modal) = self.shell.as_mut() {
-            if modal.history.is_empty() {
-                return;
-            }
-            let pos = match modal.history_pos {
-                None => modal.history.len() - 1,
-                Some(p) => p.saturating_sub(1),
+    /// Picker of notes that link to the current note via `[[Title]]`.
+    pub fn open_backlinks(&mut self) {
+        let (Some(note), Some(name)) = (self.current_note(), self.current_notebook()) else {
+            return;
+        };
+        let title = note.title.clone();
+        let self_path = note.path.clone();
+
+        let paths = nb::search_paths(&name, &format!("[[{title}]]"));
+        let all = nb::notes(&name).unwrap_or_default();
+        let items: Vec<PickItem> = paths
+            .into_iter()
+            .filter(|p| *p != self_path)
+            .filter_map(|p| all.iter().find(|n| n.path == p))
+            .map(|n| {
+                PickItem::new(
+                    format!("[{}] {}", n.id, n.title),
+                    Action::SelectNote(n.path.clone()),
+                )
+            })
+            .collect();
+        self.overlay = Some(Box::new(
+            Picker::new(format!("Backlinks: {title}"), items)
+                .empty_note("No notes link here.")
+                .sized(70, 70),
+        ));
+    }
+
+    /// Picker of the `[[wiki links]]` found in the current note; selecting one
+    /// jumps to that note.
+    pub fn open_links(&mut self) {
+        let items: Vec<PickItem> = extract_wiki_links(&self.preview)
+            .into_iter()
+            .map(|target| match self
+                .notes
+                .iter()
+                .find(|n| n.title.eq_ignore_ascii_case(&target) || n.id == target)
+            {
+                Some(n) => PickItem::new(
+                    format!("→ [{}] {}", n.id, n.title),
+                    Action::SelectNote(n.path.clone()),
+                ),
+                None => PickItem::new(format!("→ {target}  (unresolved)"), Action::None),
+            })
+            .collect();
+        self.overlay = Some(Box::new(
+            Picker::new("Links in this note", items)
+                .empty_note("No [[links]] in this note.")
+                .sized(70, 70),
+        ));
+    }
+}
+
+/// The notebook a note path belongs to: the name of its parent directory.
+fn notebook_of_path(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .parent()?
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
+/// Extract `[[wiki link]]` targets from note lines, in order, de-duplicated.
+/// For aliased links `[[target|text]]`, the part before `|` is the target.
+fn extract_wiki_links(lines: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in lines {
+        let mut rest = line.as_str();
+        while let Some(start) = rest.find("[[") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find("]]") else {
+                break;
             };
-            modal.history_pos = Some(pos);
-            modal.input = modal.history[pos].clone();
+            let target = after[..end]
+                .split('|')
+                .next()
+                .unwrap_or(&after[..end])
+                .trim()
+                .to_string();
+            if !target.is_empty() && !out.contains(&target) {
+                out.push(target);
+            }
+            rest = &after[end + 2..];
         }
     }
+    out
+}
 
-    pub fn shell_history_next(&mut self) {
-        if let Some(modal) = self.shell.as_mut() {
-            match modal.history_pos {
-                Some(p) if p + 1 < modal.history.len() => {
-                    modal.history_pos = Some(p + 1);
-                    modal.input = modal.history[p + 1].clone();
-                }
-                _ => {
-                    modal.history_pos = None;
-                    modal.input.clear();
-                }
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::extract_wiki_links;
+
+    fn lines(s: &[&str]) -> Vec<String> {
+        s.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn extracts_links_in_order_deduped() {
+        let input = lines(&[
+            "See [[Architecture]] and [[Roadmap]].",
+            "Again [[Architecture]] plus [[Home|the index]].",
+        ]);
+        assert_eq!(
+            extract_wiki_links(&input),
+            ["Architecture", "Roadmap", "Home"]
+        );
+    }
+
+    #[test]
+    fn ignores_unterminated_brackets() {
+        assert_eq!(extract_wiki_links(&lines(&["a [[ b"])), Vec::<String>::new());
     }
 }

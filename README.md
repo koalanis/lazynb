@@ -35,8 +35,38 @@ You need [`nb`](https://github.com/xwmx/nb) on your `PATH`.
 | `1` / `2`  | Focus notebooks / notes directly    |
 | `enter`    | Open the selected note              |
 | `r`        | Reload the current notebook         |
+| `t`        | Tag list / filter the notes panel   |
+| `b`        | Backlinks to the selected note      |
+| `l`        | Jump to a `[[link]]` in the note    |
 | `:`        | Open the nb shell (run nb commands) |
 | `q` / `esc`| Quit                                |
+
+## Tags and links
+
+- `t` opens a picker of every tag in the current notebook. Pick one to filter
+  the notes panel to that tag; the `[ all notes ]` row clears the filter. The
+  active filter shows in the Notes panel title and the status bar.
+- `b` lists the notes that link to the selected note via `[[Title]]`. Pick one
+  to jump to it.
+- `l` lists the `[[wiki links]]` inside the selected note. Pick one to jump to
+  its target (switching notebook if needed).
+
+All of these are thin wrappers over nb primitives (`nb ls --tag`,
+`nb <nb>:search`), and they're built on a small reusable overlay system —
+see [Extending](#extending).
+
+## Extending
+
+Modal widgets live in `src/overlay.rs` and implement the `Overlay` trait
+(handle a key, draw yourself). Instead of mutating the app directly, an
+overlay returns an `Action`; `App::apply` is the one place that interprets
+actions. Most overlays are just lists, so `Picker` is a reusable widget you
+configure with data — `(label, action)` rows — and it provides navigation,
+incremental filtering, and selection for free. The tag/backlink/link features
+are each a few lines that assemble a `Picker`. To add a new overlay: add an
+`Action` variant if you need a new effect, handle it in `App::apply`, then
+build a `Picker` (or implement `Overlay`) and open it from an `App::open_*`
+method bound to a key in `main.rs`. Colors live in `src/config.rs`.
 
 ## nb shell
 
