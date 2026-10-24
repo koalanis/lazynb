@@ -123,6 +123,8 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" backlinks  "),
         key("l"),
         Span::raw(" links  "),
+        key("g"),
+        Span::raw(" graph  "),
         key("enter"),
         Span::raw(" open  "),
         key(":"),
